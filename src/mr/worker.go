@@ -165,7 +165,7 @@ func DealReduce(reducef func(string, []string) string) bool {
 
 	output := fmt.Sprintf("%s-%d", outputFilename, seq)
 	os.Remove(output)
-	file, err := os.OpenFile(output, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.ModePerm)
+	file, err := os.OpenFile(output, os.O_CREATE|os.O_RDWR, os.ModePerm)
 	if err != nil {
 		log.Printf("open: %s, err: %s", output, err.Error())
 		cancel()
@@ -242,6 +242,38 @@ func DealMap(mapf func(string, string) []KeyValue) {
 	}
 
 	for iFilename, in := range recordKF {
+		// 如果之前这个文件已经存在了
+		_, err := os.Stat(iFilename)
+		if os.IsExist(err) {
+			tmpFile, err := os.OpenFile(iFilename, os.O_RDONLY, os.ModePerm)
+			if err != nil {
+				log.Printf("open: %s, err: %s", iFilename, err.Error())
+				call(HandleErrorRpcName, &PingArgs{
+					WorkerType: seq,
+					WorkerSeq:  MapWorker,
+				}, &NullReply{})
+				cancel()
+				return
+			}
+			con, err := io.ReadAll(tmpFile)
+			if err != nil {
+				log.Printf("open: %s, err: %s", iFilename, err.Error())
+				call(HandleErrorRpcName, &PingArgs{
+					WorkerType: seq,
+					WorkerSeq:  MapWorker,
+				}, &NullReply{})
+				cancel()
+				return
+			}
+			var it []KeyValue
+			err = json.Unmarshal(con, &it)
+			if err != nil {
+				os.Remove(iFilename)
+			} else {
+				in = append(in, it...)
+			}
+		}
+
 		res, err := json.Marshal(&in)
 		if err != nil {
 			log.Printf("open: %s, err: %s", iFilename, err.Error())
@@ -254,7 +286,6 @@ func DealMap(mapf func(string, string) []KeyValue) {
 		}
 
 		// 只写
-		os.Remove(iFilename)
 		file, err := os.OpenFile(iFilename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
 		if err != nil {
 			log.Printf("open: %s, err: %s", iFilename, err.Error())

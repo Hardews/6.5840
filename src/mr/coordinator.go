@@ -48,17 +48,22 @@ type WorkerStatus struct {
 
 func (c *Coordinator) MapDistribution(args *NullArgs, reply *DisReply) error {
 	reply.WorkerSeq = -1
-	if len(c.DistributionChan) == 0 {
+	if len(c.DistributionChan) == 0 || c.IsMapDone {
 		return nil
 	}
 
 	select {
 	case seq := <-c.MapChan:
+		fileInfo, ok := <-c.DistributionChan
+		if !ok {
+			// 已经没任务了
+			return nil
+		}
+
 		// 有空闲的 worker 位置
 		reply.WorkerSeq = seq
 		reply.NReduce = c.NReduce
 
-		fileInfo := <-c.DistributionChan
 		reply.Filename = fileInfo.Filename
 		reply.Content = fileInfo.Content
 
@@ -76,7 +81,6 @@ func (c *Coordinator) MapDistribution(args *NullArgs, reply *DisReply) error {
 		// log.Println("distribution a worker, seq:", seq)
 
 		go c.handleAlive(MapWorker, seq, c.Exp)
-		return nil
 	default:
 	}
 
@@ -129,7 +133,7 @@ func (c *Coordinator) contentDistribution() {
 
 func (c *Coordinator) ReduceDistribution(args *NullArgs, reply *DisReply) error {
 	reply.WorkerSeq = -1
-	if len(c.ReduceChan) == 0 {
+	if len(c.ReduceChan) == 0 || c.IsDone {
 		return nil
 	}
 
@@ -146,7 +150,6 @@ func (c *Coordinator) ReduceDistribution(args *NullArgs, reply *DisReply) error 
 
 		// log.Printf("reduce distribute, seq: %d, chan len: %d, reduce num: %d", seq, len(c.ReduceChan), c.ReduceWorkerNum)
 		go c.handleAlive(ReduceWorker, seq, c.Exp)
-		return nil
 	default:
 	}
 
@@ -222,6 +225,15 @@ func (c *Coordinator) giveWorkBack(wType, seq int) {
 	// log.Printf("give work back, wType: %d, seq: %d", wType, seq)
 	switch wType {
 	case MapWorker:
+		pattern := fmt.Sprintf("mr-%d-*.txt", seq)
+		files, err := filepath.Glob(pattern)
+		if err != nil {
+			log.Printf("glob: %v, err: %v", pattern, err)
+		}
+		for _, filename := range files {
+			os.Remove(filename)
+		}
+
 		c.MapChan <- seq
 
 		c.Mu.Lock()
@@ -234,6 +246,7 @@ func (c *Coordinator) giveWorkBack(wType, seq int) {
 			Filename: wi.Filename,
 			Content:  wi.Content,
 		}
+		log.Printf("give work back, distribute: %d, seq: %d", len(c.DistributionChan), seq)
 	case ReduceWorker:
 		c.ReduceChan <- seq
 
@@ -328,6 +341,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.ReduceAlive = make([]bool, nReduce)
 
 	c.Exp = MaxTimeLimit * time.Second
+
+	fmt.Println(c.InputFiles)
 
 	c.server()
 	return &c
