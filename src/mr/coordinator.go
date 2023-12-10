@@ -9,6 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,8 +40,8 @@ type Coordinator struct {
 }
 
 type JobInfo struct {
-	Filename string // 该 worker 正在处理的文件名（仅 reduce worker
-	Content  string // 该 worker 正在处理的内容（仅 map worker
+	Filename string // 该 worker 正在处理的文件名
+	Content  string // 该 worker 正在处理的内容
 }
 
 /*	Job Distribute	*/
@@ -74,8 +75,8 @@ func (c *Coordinator) JobDistribute(args *DisArgs, reply *DisReply) error {
 			c.MapWorkerNum++
 			c.Mu.Unlock()
 
-			// log.Printf("distribute a map job, seq: %d", seq)
-		} else if c.IsReduceReady {
+			// log.Printf("distribute a map job, seq: %d, content: %v", seq, jobInfo.Filename)
+		} else if ReduceJob == args.JobType && c.IsReduceReady {
 			// reduce job
 			c.Mu.Lock()
 			c.ReduceWorkerNum++
@@ -104,10 +105,9 @@ func (c *Coordinator) MapJobFinish(args *SeqArgs, reply *NullReply) error {
 	// 删除信息
 	c.Mu.Lock()
 	delete(c.JobInfo, args.JobSeq)
+	// 防止 seq 被复用, 不将已完成的 seq 退回
 	c.MapWorkerNum--
 	c.Mu.Unlock()
-
-	c.DistributeSeqChan <- args.JobSeq
 
 	// log.Printf("map job finish, seq: %d, now num: %d, content chan: %d", args.JobSeq, c.MapWorkerNum, len(c.DistributeChan))
 
@@ -144,7 +144,7 @@ func (c *Coordinator) contentDistribute() {
 }
 
 func (c *Coordinator) reduceJobStart() {
-	log.Println("start reduce job")
+	log.Println(strings.Repeat("-", c.NReduce), "start reduce job", strings.Repeat("-", c.NReduce))
 	c.DistributeSeqChan = make(chan int, c.NReduce)
 	for i := 0; i < c.NReduce; i++ {
 		c.DistributeSeqChan <- i
@@ -179,7 +179,7 @@ func (c *Coordinator) ReduceJobFinish(args *SeqArgs, reply *NullReply) error {
 	}
 
 	if len(c.DistributeSeqChan) == 0 && c.ReduceWorkerNum == 0 && c.IsMapJobDone {
-		time.Sleep(c.Exp)
+		time.Sleep(c.Exp / 2)
 		if len(c.DistributeSeqChan) == 0 && c.ReduceWorkerNum == 0 && c.IsMapJobDone {
 			c.IsAllJobDone = true
 		}
@@ -254,7 +254,10 @@ func (c *Coordinator) giveJobBack(seq int) {
 			log.Printf("glob: %v, err: %v", pattern, err)
 		}
 		for _, filename := range files {
-			os.Remove(filename)
+			err = os.Remove(filename)
+			if err != nil {
+				log.Printf("remove temp file: %v, err: %v", pattern, err)
+			}
 		}
 
 		c.Mu.Lock()
@@ -263,14 +266,10 @@ func (c *Coordinator) giveJobBack(seq int) {
 		c.MapWorkerNum--
 		c.Mu.Unlock()
 
-		c.DistributeChan <- JobInfo{
-			Filename: wi.Filename,
-			Content:  wi.Content,
-		}
-		// log.Printf("give map job back, seq have: %d, back seq: %d, now job num: %d, content: %d", len(c.DistributeChan), seq, c.MapWorkerNum, len(c.DistributeChan))
-
+		c.DistributeChan <- wi
 		c.DistributeSeqChan <- seq
 
+		log.Printf("give map job back, seq have: %d, back seq: %d, now job num: %d, content: %d", len(c.DistributeChan), seq, c.MapWorkerNum, len(c.DistributeChan))
 		return
 	}
 
@@ -278,8 +277,10 @@ func (c *Coordinator) giveJobBack(seq int) {
 	c.ReduceWorkerNum--
 	delete(c.JobInfo, seq)
 	c.Mu.Unlock()
+
 	c.DistributeSeqChan <- seq
-	// log.Printf("give reduce job back, seq have: %d, back seq: %d, now job num: %d", len(c.DistributeSeqChan), seq, c.ReduceWorkerNum)
+	log.Printf("give reduce job back, seq have: %d, back seq: %d, now job num: %d", len(c.DistributeSeqChan), seq, c.ReduceWorkerNum)
+	return
 }
 
 // Done main/mrcoordinator.go calls Done() periodically to find out
@@ -303,6 +304,8 @@ func (c *Coordinator) server() {
 
 // MakeCoordinator create a Coordinator.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	log.Println("start a coordinator")
+
 	c := Coordinator{}
 	c.NReduce = nReduce
 
