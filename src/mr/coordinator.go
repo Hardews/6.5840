@@ -209,9 +209,7 @@ func (c *Coordinator) HandleError(args *SeqArgs, reply *NullReply) error {
 
 // Ping 判断是否存活的依据
 func (c *Coordinator) Ping(args *SeqArgs, reply *NullReply) error {
-	go func() {
-		c.JobAlive[args.JobSeq] <- true
-	}()
+	c.JobAlive[args.JobSeq] <- true
 	return nil
 }
 

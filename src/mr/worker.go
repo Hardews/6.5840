@@ -209,32 +209,6 @@ func DealMap(mapf func(string, string) []KeyValue) (isTakeJob bool) {
 	}
 
 	for iFilename, in := range recordKF {
-		// 如果之前这个文件已经存在了
-		_, err := os.Stat(iFilename)
-		if os.IsExist(err) {
-			tmpFile, err := os.OpenFile(iFilename, os.O_RDONLY, os.ModePerm)
-			if err != nil {
-				log.Printf("open: %s, err: %s", iFilename, err.Error())
-				call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
-				cancel()
-				return
-			}
-			con, err := io.ReadAll(tmpFile)
-			if err != nil {
-				log.Printf("open: %s, err: %s", iFilename, err.Error())
-				call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
-				cancel()
-				return
-			}
-			var it []KeyValue
-			err = json.Unmarshal(con, &it)
-			if err != nil {
-				os.Remove(iFilename)
-			} else {
-				in = append(in, it...)
-			}
-		}
-
 		res, err := json.Marshal(&in)
 		if err != nil {
 			log.Printf("open: %s, err: %s", iFilename, err.Error())
