@@ -55,6 +55,10 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	log.Println("start a worker")
 	var isDone bool
+	var isMapDone DoneReply
+	call(IsMapDoneRpcName, &NullReply{}, &isMapDone)
+	isDone = isMapDone.IsDone
+
 	for {
 		if !isDone && !DealMap(mapf) {
 			var isMapDone DoneReply

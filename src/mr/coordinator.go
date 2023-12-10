@@ -267,10 +267,10 @@ func (c *Coordinator) giveJobBack(seq int) {
 			Filename: wi.Filename,
 			Content:  wi.Content,
 		}
+		// log.Printf("give map job back, seq have: %d, back seq: %d, now job num: %d, content: %d", len(c.DistributeChan), seq, c.MapWorkerNum, len(c.DistributeChan))
 
 		c.DistributeSeqChan <- seq
 
-		log.Printf("give map job back, seq have: %d, back seq: %d, now job num: %d", len(c.DistributeChan), seq, c.MapWorkerNum)
 		return
 	}
 
@@ -279,7 +279,7 @@ func (c *Coordinator) giveJobBack(seq int) {
 	delete(c.JobInfo, seq)
 	c.Mu.Unlock()
 	c.DistributeSeqChan <- seq
-	log.Printf("give reduce job back, seq have: %d, back seq: %d, now job num: %d", len(c.DistributeSeqChan), seq, c.ReduceWorkerNum)
+	// log.Printf("give reduce job back, seq have: %d, back seq: %d, now job num: %d", len(c.DistributeSeqChan), seq, c.ReduceWorkerNum)
 }
 
 // Done main/mrcoordinator.go calls Done() periodically to find out
