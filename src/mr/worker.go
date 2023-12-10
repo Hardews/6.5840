@@ -15,14 +15,13 @@ import "net/rpc"
 import "hash/fnv"
 
 const (
-	MapDistributionRpcName    = "Coordinator.MapDistribution"
-	MapFinishRpcName          = "Coordinator.MapFinish"
-	ReduceDistributionRpcName = "Coordinator.ReduceDistribution"
-	IsMapWorkDoneRpcName      = "Coordinator.IsMapWorkDone"
-	IsReduceDoneRpcName       = "Coordinator.IsReduceWorkDone"
-	ReduceWorkDone            = "Coordinator.ReduceWorkDone"
-	HandleErrorRpcName        = "Coordinator.HandleError"
-	PingRpcName               = "Coordinator.Ping"
+	JobDistributionRpcName = "Coordinator.JobDistribute"
+	MapJobFinishRpcName    = "Coordinator.MapJobFinish"
+	ReduceJobFinishRpcName = "Coordinator.ReduceJobFinish"
+	IsMapDoneRpcName       = "Coordinator.IsMapDone"
+	IsReduceDoneRpcName    = "Coordinator.IsReduceDone"
+	HandleErrorRpcName     = "Coordinator.HandleError"
+	PingRpcName            = "Coordinator.Ping"
 
 	outputFilename = "mr-out"
 )
@@ -53,58 +52,42 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-	// log.Println("start a worker")
 
+	log.Println("start a worker")
 	var isDone bool
-
-	var tranChan = make(chan bool, 1)
-	t := time.NewTicker(time.Second / 500)
 	for {
-		select {
-		case <-tranChan:
-			if !DealReduce(reducef) {
-				// 没有分配到 reduce 操作
-				var Done DoneReply
-				call(IsReduceDoneRpcName, &NullReply{}, &Done)
-				if Done.IsDone {
-					// 全部处理完了，程序应该退出
-					return
-				}
-			}
-		case <-t.C:
-			if !isDone {
-				DealMap(mapf)
-			}
-		default:
-			// 是否 map 已经处理完了
-			if !isDone {
-				var isMapDone DoneReply
-				call(IsMapWorkDoneRpcName, &NullReply{}, &isMapDone)
-				isDone = isMapDone.IsDone
-			}
-			if isDone {
-				// 处理完了只需要进行 reduce 操作
-				tranChan <- true
+		if !isDone && !DealMap(mapf) {
+			var isMapDone DoneReply
+			call(IsMapDoneRpcName, &NullReply{}, &isMapDone)
+			isDone = isMapDone.IsDone
+		} else if isDone && !DealReduce(reducef) {
+			// 没有分配到 reduce 操作
+			var Done DoneReply
+			call(IsReduceDoneRpcName, &NullReply{}, &Done)
+			if Done.IsDone {
+				// 全部处理完了，程序应该退出
+				return
 			}
 		}
+		// 休眠一下，防止它抢太快了别的抢不到
+		time.Sleep(time.Second / 2)
 	}
 }
 
 func DealReduce(reducef func(string, []string) string) bool {
 	// 当前 worker 是否可以进行 reduce 的处理
 	var disReply DisReply
-	ok := call(ReduceDistributionRpcName, &NullArgs{}, &disReply)
-	if !ok || disReply.WorkerSeq == -1 {
+	ok := call(JobDistributionRpcName, &DisArgs{ReduceJob}, &disReply)
+	if !ok || disReply.JobSeq == -1 {
 		// 没拿到
 		return false
 	}
 
 	// worker 的基本参数配置
-	seq := disReply.WorkerSeq
-	// log.Println("start reduce work, reply:", disReply.WorkerSeq)
+	seq := disReply.JobSeq
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go KeepAlive(ctx, ReduceWorker, seq)
+	go KeepAlive(ctx, seq)
 
 	// 找到对应分区下的所有中间输出文件
 	pattern := fmt.Sprintf("mr-*-%d.txt", seq)
@@ -113,10 +96,7 @@ func DealReduce(reducef func(string, []string) string) bool {
 	if err != nil {
 		log.Printf("glob file, err: %s", err.Error())
 		cancel()
-		call(HandleErrorRpcName, &PingArgs{
-			WorkerType: seq,
-			WorkerSeq:  ReduceWorker,
-		}, &NullReply{})
+		call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 		return true
 	}
 
@@ -128,10 +108,7 @@ func DealReduce(reducef func(string, []string) string) bool {
 		if err != nil {
 			log.Printf("open: %s, err: %s", middleFilename, err.Error())
 			cancel()
-			call(HandleErrorRpcName, &PingArgs{
-				WorkerType: seq,
-				WorkerSeq:  ReduceWorker,
-			}, &NullReply{})
+			call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 			return true
 		}
 
@@ -139,10 +116,7 @@ func DealReduce(reducef func(string, []string) string) bool {
 		if err != nil {
 			log.Printf("read: %s, err: %s", middleFilename, err.Error())
 			cancel()
-			call(HandleErrorRpcName, &PingArgs{
-				WorkerType: seq,
-				WorkerSeq:  ReduceWorker,
-			}, &NullReply{})
+			call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 			return true
 		}
 
@@ -151,10 +125,7 @@ func DealReduce(reducef func(string, []string) string) bool {
 		if err != nil {
 			log.Printf("read: %s, err: %s", middleFilename, err.Error())
 			cancel()
-			call(HandleErrorRpcName, &PingArgs{
-				WorkerType: seq,
-				WorkerSeq:  ReduceWorker,
-			}, &NullReply{})
+			call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 			return true
 		}
 
@@ -169,10 +140,7 @@ func DealReduce(reducef func(string, []string) string) bool {
 	if err != nil {
 		log.Printf("open: %s, err: %s", output, err.Error())
 		cancel()
-		call(HandleErrorRpcName, &PingArgs{
-			WorkerType: seq,
-			WorkerSeq:  ReduceWorker,
-		}, &NullReply{})
+		call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 		return true
 	}
 
@@ -199,33 +167,31 @@ func DealReduce(reducef func(string, []string) string) bool {
 	if err != nil {
 		log.Printf("write: %s, err: %s", output, err.Error())
 		cancel()
-		call(HandleErrorRpcName, &PingArgs{
-			WorkerType: seq,
-			WorkerSeq:  ReduceWorker,
-		}, &NullReply{})
+		call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 		return true
 	}
 
 	file.Close()
 
-	call(ReduceWorkDone, &PingArgs{WorkerType: ReduceWorker, WorkerSeq: seq}, &NullReply{})
+	call(ReduceJobFinishRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 	cancel()
 	return true
 }
 
-func DealMap(mapf func(string, string) []KeyValue) {
+func DealMap(mapf func(string, string) []KeyValue) (isTakeJob bool) {
+	isTakeJob = true
 	var disReply DisReply
-	ok := call(MapDistributionRpcName, &NullArgs{}, &disReply)
-	if !ok || disReply.WorkerSeq == -1 || disReply.Filename == "" {
+	ok := call(JobDistributionRpcName, &DisArgs{MapJob}, &disReply)
+	if !ok || disReply.JobSeq == -1 || disReply.Filename == "" {
 		// 没拿到资源，那么就等待
-		return
+		return false
 	}
 
 	nReduce := disReply.NReduce
-	seq, filename, content := disReply.WorkerSeq, disReply.Filename, disReply.Content
+	seq, filename, content := disReply.JobSeq, disReply.Filename, disReply.Content
 
 	var ctx, cancel = context.WithCancel(context.Background())
-	go KeepAlive(ctx, MapWorker, seq)
+	go KeepAlive(ctx, seq)
 
 	// 记录分区文件对应的 KeyValue 对
 	var recordKF = make(map[string][]KeyValue)
@@ -248,20 +214,14 @@ func DealMap(mapf func(string, string) []KeyValue) {
 			tmpFile, err := os.OpenFile(iFilename, os.O_RDONLY, os.ModePerm)
 			if err != nil {
 				log.Printf("open: %s, err: %s", iFilename, err.Error())
-				call(HandleErrorRpcName, &PingArgs{
-					WorkerType: seq,
-					WorkerSeq:  MapWorker,
-				}, &NullReply{})
+				call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 				cancel()
 				return
 			}
 			con, err := io.ReadAll(tmpFile)
 			if err != nil {
 				log.Printf("open: %s, err: %s", iFilename, err.Error())
-				call(HandleErrorRpcName, &PingArgs{
-					WorkerType: seq,
-					WorkerSeq:  MapWorker,
-				}, &NullReply{})
+				call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 				cancel()
 				return
 			}
@@ -277,10 +237,7 @@ func DealMap(mapf func(string, string) []KeyValue) {
 		res, err := json.Marshal(&in)
 		if err != nil {
 			log.Printf("open: %s, err: %s", iFilename, err.Error())
-			call(HandleErrorRpcName, &PingArgs{
-				WorkerType: seq,
-				WorkerSeq:  MapWorker,
-			}, &NullReply{})
+			call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 			cancel()
 			return
 		}
@@ -289,10 +246,7 @@ func DealMap(mapf func(string, string) []KeyValue) {
 		file, err := os.OpenFile(iFilename, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.ModePerm)
 		if err != nil {
 			log.Printf("open: %s, err: %s", iFilename, err.Error())
-			call(HandleErrorRpcName, &PingArgs{
-				WorkerType: seq,
-				WorkerSeq:  MapWorker,
-			}, &NullReply{})
+			call(HandleErrorRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 			cancel()
 			return
 		}
@@ -301,22 +255,25 @@ func DealMap(mapf func(string, string) []KeyValue) {
 		file.Close()
 	}
 
-	call(MapFinishRpcName, &FinishArgs{WorkerSeq: seq}, &NullReply{})
+	call(MapJobFinishRpcName, &SeqArgs{JobSeq: seq}, &NullReply{})
 	cancel()
+	return
 }
 
-func KeepAlive(ctx context.Context, wType, workSeq int) {
-	var t = time.NewTicker(time.Second)
+func KeepAlive(ctx context.Context, workSeq int) {
+	var t = time.NewTicker(time.Second / 2)
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-t.C:
-			// log.Printf("working, seq: %d, type: %d", workSeq, wType)
-			ok := call(PingRpcName, &PingArgs{wType, workSeq}, &NullReply{})
+			// log.Printf("Ping, seq: %d", workSeq)
+			ok := call(PingRpcName, &SeqArgs{workSeq}, &NullReply{})
 			if !ok {
 				return
 			}
-		case <-ctx.Done():
-			return
+		default:
+			continue
 		}
 	}
 }
@@ -338,6 +295,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	fmt.Printf("rpc call, rpc name: %s, err: %v\n", rpcname, err)
 	return false
 }

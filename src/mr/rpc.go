@@ -5,49 +5,29 @@ import (
 	"strconv"
 )
 
-//
-// RPC definitions.
-//
-// remember to capitalize all names.
-//
-
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
-}
-
-type ExampleReply struct {
-	Y int
-}
-
-// Add your RPC definitions here.
+// your RPC definitions here.
 
 type NullArgs struct{}
 
 type NullReply struct{}
 
-type DisReply struct {
-	WorkerSeq int
-	NReduce   int
-	Filename  string
-	Content   string
+type DisArgs struct {
+	JobType int
 }
 
-type FinishArgs struct {
-	WorkerSeq int
+type DisReply struct {
+	JobSeq   int
+	NReduce  int
+	Filename string
+	Content  string
 }
 
 type DoneReply struct {
 	IsDone bool
 }
 
-type PingArgs struct {
-	WorkerType int
-	WorkerSeq  int
+type SeqArgs struct {
+	JobSeq int
 }
 
 func coordinatorSock() string {
